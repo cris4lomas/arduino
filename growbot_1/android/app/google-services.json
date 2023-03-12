@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "834001397716",
+    "firebase_url": "https://esp8266-df5f1-default-rtdb.firebaseio.com",
+    "project_id": "esp8266-df5f1",
+    "storage_bucket": "esp8266-df5f1.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:834001397716:android:fecd23f2b66b3721329841",
+        "android_client_info": {
+          "package_name": "com.example.growbot_1"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "834001397716-b3t3ccg4q5qj96dbilini4djs019mi9t.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCOAadQi0lXvyQKPMhlGv8-g0wXlMGYxro"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "834001397716-b3t3ccg4q5qj96dbilini4djs019mi9t.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
