@@ -56,7 +56,7 @@ TipoRele tipo2 = humed;
 TipoRele tipo3 = suelo;
 TipoRele tipo4 = venti;
 
-DataRele dataR1 = {23, 2, 0, false}; //luces: tiempo //INICIO 10, FIN 1 MINUTOS, 2 MINUTOS => INICIO: 10:02 AM
+DataRele dataR1 = {23, 6, 59, false}; //luces: tiempo //INICIO 10, FIN 1 MINUTOS, 2 MINUTOS => INICIO: 10:02 AM
 DataRele dataR2 = {25, 45, 0, false}; // humedad: humedad ambiente
 DataRele dataR3 = {10, 20, 0, false}; //riego: tiempo
 DataRele dataR4 = {35, 25, 0, false}; //venti: temperatura ambiente
@@ -123,31 +123,42 @@ void verifyReleStatus(){
   
   time_t t_ahora = makeTime(timeNow);
   time_t t_rele = makeTime(releData);
-  time_t t_ahora_menosUno = t_ahora - SECS_PER_DAY;
+  time_t t_rele_ayer = t_rele - SECS_PER_DAY;
 
   long int diferencia = difftime(t_ahora, t_rele);
-  long int diferenciaMenosUno = difftime(t_ahora_menosUno, t_rele);
+  long int diferenciaMenosUnDia = difftime(t_ahora, t_rele_ayer);
   unsigned long int max = dataR1.fin * 60;
   bool dentroDeRango = (diferencia >= 0) && (diferencia < max);
+  bool dentroDeRangoDeAyer = (diferenciaMenosUnDia >= 0) && (diferenciaMenosUnDia < max);
 
   Serial.println("La diferencia de segundos es de: " + String(diferencia));
   Serial.println(" ");
-  Serial.println("La diferencia de segundos MENOS UN DÍA es de: " + String(diferenciaMenosUno));
+  Serial.println("La diferencia de segundos MENOS UN DÍA es de: " + String(diferenciaMenosUnDia));
   Serial.println(" ");
   Serial.println("La cantidad de segundos en un día es de: " + String(SECS_PER_DAY));
   Serial.println("Tiempo límite: " + String(max));
 
-  if(dentroDeRango)
+  delay(2000);
+
+  if(dentroDeRango){
     digitalWrite(LED_BUILTIN, HIGH);
-  else
+    Serial.println("Entré al encendido del día de HOY");
+  }
+  else if(dentroDeRangoDeAyer){
+    Serial.println("Entré al encendido del día de AYER");
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+  else{
+    Serial.println("Cerré sesión");
     digitalWrite(LED_BUILTIN, LOW);   
-  delay(4500);
+  }
+  delay(2500);
     
 }
 
 void getDateTime(){
   
-  int hora = 23, min = 58, sec = 0, mes = 1, dia = 1, year = 2010 - 1970;
+  int hora = 00, min = 04, sec = 0, mes = 1, dia = 2, year = 2010 - 1970;
   
   setTime(hora, min, sec, mes, dia, year);
   horaInicial = now();

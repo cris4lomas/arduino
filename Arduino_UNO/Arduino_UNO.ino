@@ -1,4 +1,5 @@
 #include <DHT.h>
+#include <Time.h>
 #include <TimeLib.h>
 #include <TimeAlarms.h>
 #include <SoftwareSerial.h>
@@ -8,89 +9,100 @@
 #define PINRELE2 9
 #define PINRELE3 10
 #define PINRELE4 11
-#define PINSENSORSUELO A0
+#define PINGROUND A0
+#define QUANTITYRELES 4
+#define ONE_MINUTE 60
 
-enum TipoRele{
-    luces,
-    humed,
-    suelo,
-    venti
-};
-
-struct DataRele{
-  unsigned short int inicio;
-  unsigned short int fin;
-  unsigned short int minutos;
-  bool manual;
-};
-
-
-SoftwareSerial bt(2, 3);
-DHT dht(DHTPIN, DHTTYPE);
-
-time_t tEncendidoR1 = now();
-time_t tEncendidoR2 = now();
-time_t tEncendidoR3 = now();
-time_t tEncendidoR4 = now();
-
-bool r1IsOn = false;
-bool r2IsOn = false;
-bool r3IsOn = false;
-bool r4IsOn = false;
-bool infoActualizadaLuces = true;
-bool infoActualizadaRiego = true;
-char msjRec[256];
-char msjR1[2], msjR2[2], msjR3[2], msjR4[2];
-
-float _lastH = -1;
-float _lastT = -1;
-int _suelo = 0;
-int cantNoLeidosT = 0;
-int cantNoLeidosH = 0;
-
-TipoRele tipo1 = luces;
-TipoRele tipo2 = humed;
-TipoRele tipo3 = suelo;
-TipoRele tipo4 = venti;
-
-DataRele dataR1 = {12, 12, 0, false}; //luces: tiempo
-DataRele dataR2 = {25, 45, 0, false}; // humedad: humedad ambiente
-DataRele dataR3 = {10, 20, 0, false}; //riego: tiempo
-DataRele dataR4 = {35, 25, 0, false}; //venti: temperatura ambiente
-
-//AlarmId idLuces;
-//AlarmId idSuelo;
-
-void TurnManuallyRele(short int numRele);
-void getReleData(String info);
-bool charStarts(const char* cadena, const char * empiezaCon);
+//******************************************
+//********DEFINICION DE FUNCIONES***********
+//******************************************
+bool charStarts(const char* chain, const char * startWith);
 void sendEnvironmentInfo();
 void getTypes(const char * msj);
 void getDateTime(const char * msj);
 void setReleTimes(const char * msj);
 void setReleT(unsigned short int rele, unsigned short int pos, unsigned short int valor);
-void setOnOrOffReles(const char * msj);
-void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele);
-void turnOffRele(int nrRele);
-void turnOnRele(int nrRele);
+void setOnOrOffReles(const char * msg);
+void turnOffRele(int nrRele, bool isFirst = false);
+void turnOnRele(int nrRele, bool isFirst = false);
+void getMessage(const char * msg);
+void verifyReleStatus();
+void verifyManualMaxHoursRele(int nrRele, int _maxHours);
+void verifyAutoHumidityRele(int nrRele);
+void verifyAutoGroundRele(int nrRele);
+void verifyAutoLigthRele(int nrRele);
+void verifyAutoWindRele(int nrRele);
+void sendErrorRele(int nrRele);
+//******************************************
+//**************VARIABLES*******************
+//******************************************
+
+SoftwareSerial bt(2, 3);
+DHT dht(DHTPIN, DHTTYPE);
+
+enum ReleTypes{
+    light,
+    humidifier,
+    ground,
+    wind
+};
+
+struct DataRele{
+  unsigned short int pin;
+  unsigned short int start;
+  unsigned short int end;
+  unsigned short int minutes;
+  bool manual;
+  ReleTypes type;
+  bool on;
+  time_t timeOn;
+};
+
+typedef struct DataRele DataRele;
+
+DataRele reles[QUANTITYRELES] = {
+  {PINRELE1, 12, 12, 0, false, light, false, now()}, 
+  {PINRELE2, 25, 45, 0, false, humidifier, false, now()}, 
+  {PINRELE3, 10, 20, 0, false, ground, false, now()},
+  {PINRELE4, 35, 25, 0, false, wind, false, now()}
+};
+
+char msjRec[256];
+
+float lastHumidity = -1;
+float lastTemperature = -1;
+int lastGround = 0;
+int quantityErrTemperature = 0;
+int quantityErrHumidity = 0;
+
+
+//******************************************
+//*****************SETUP********************
+//******************************************
 
 
 void setup() {
   Serial.begin(9600);
   bt.begin(9600);
-  pinMode(PINRELE1, OUTPUT);
-  pinMode(PINRELE2, OUTPUT);
-  pinMode(PINRELE3, OUTPUT);
-  pinMode(PINRELE4, OUTPUT);
+  
+  for(int i = 0; i < QUANTITYRELES; i++)
+    pinMode(reles[i].pin, OUTPUT);
+
+  pinMode(PINGROUND, OUTPUT);
   pinMode(DHTPIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
   dht.begin();
 }
 
+//******************************************
+//*****************LOOP*********************
+//******************************************
+
 void loop() {
   
   delay(50);
+  verifyReleStatus();
 
   if(bt.available()){
     
@@ -104,15 +116,6 @@ void loop() {
 
     short int idx = 0;
 
-    verifyReleStatus(dataR1, tipo1, 1);
-    delay(25);
-    verifyReleStatus(dataR2, tipo2, 2);
-    delay(25);
-    verifyReleStatus(dataR3, tipo3, 3);
-    delay(25);
-    verifyReleStatus(dataR4, tipo4, 4);
-    delay(25);
-    
     while(Serial.available() > 0){
       msjRec[idx] = (char)Serial.read();
       idx++;
@@ -123,54 +126,197 @@ void loop() {
     char * msjRecPointer = msjRec;
     const char * msjRecC = msjRecPointer;
 
-    if(charStarts(msjRecC, "R1"))
-      setOnOrOffReles(msjRecC);
-    
-    else if(charStarts(msjRecC, "AMB"))
-      sendEnvironmentInfo();
-    
-    else if(charStarts(msjRecC, "&"))
-      setReleTimes(msjRecC);
-        
-    else if(charStarts(msjRecC, "TIPOS"))
-      getTypes(msjRecC);
-    
-    else if(charStarts(msjRecC, "DATE"))
-      getDateTime(msjRecC);
+    getMessage(msjRecC);
 
     delay(100);
-
     memset(msjRec,'\0', 255 * sizeof(char));
-
     delay(100);
 
   }
 }
 
-void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele){
+//******************************************
+//**************FUNCIONES*******************
+//******************************************
 
-  bool automatico = !rele.manual;
-  time_t timeReleOn;
-  bool encendido;
+void verifyReleStatus(){
 
-  if(nrRele == 1)
-    encendido = r1IsOn;
-  else if(nrRele == 2)
-    encendido = r2IsOn;
-  else if(nrRele == 3)
-    encendido = r3IsOn;
-  else if(nrRele == 4)
-    encendido = r4IsOn;
+  
 
-  if(nrRele == 1)
-    timeReleOn = tEncendidoR1;
-  else if(nrRele == 2)
-    timeReleOn = tEncendidoR2;
-  else if(nrRele == 3)
-    timeReleOn = tEncendidoR3;
-  else if(nrRele == 4)
-    timeReleOn = tEncendidoR4;
+  for(int i = 0; i < QUANTITYRELES; i++){
 
+    ReleTypes _type = reles[i].type;
+    bool isManual = reles[i].manual;
+
+    if(isManual)
+    {
+      if(_type == humidifier)
+        verifyManualMaxHoursRele(i, 12);
+      else if(_type == ground)
+        verifyManualMaxHoursRele(i,1);
+      else if(_type == light)
+        verifyManualMaxHoursRele(i,22);
+      else if(_type == wind)
+        verifyManualMaxHoursRele(i,23);
+    }
+    //isAutomatic
+    else{
+      if(_type == humidifier)
+        verifyAutoHumidityRele(i);
+      else if(_type == ground)
+        verifyAutoGroundRele(i);
+      else if(_type == light)
+        verifyAutoLightRele(i);
+      else if(_type == wind)
+        verifyAutoWindRele(i);      
+    }
+
+  }
+}
+
+void verifyManualMaxHoursRele(int nrRele, int _maxHours){
+
+  bool isOff = !(reles[nrRele].on);
+  unsigned short maxHours = _maxHours;
+
+  if(isOff)
+    return;
+
+  time_t lastTimeTurnedOn = reles[nrRele].timeOn;
+  long _timeOn = difftime(now(), lastTimeTurnedOn);
+
+  if(_timeOn >= (maxHours * ONE_HOUR))
+    turnOffRele(nrRele);
+}
+
+void verifyAutoLightRele(int nrRele){
+  
+  bool isOn = reles[nrRele].on;
+  bool isOff = !isOn;
+  short startTime = reles[nrRele].start;
+  short endTime = reles[nrRele].end;
+  short minutes = reles[nrRele].minutes;
+  time_t _now = now();
+
+  /*
+  Si está apagado, verificar si el horario actual
+  está entre el rango de encendido y encenderlo en tal caso.
+  Para esto, crear dos tiempos con los datos de inicio, minutos y de fin del relé.
+  Un tiempo con el día de hoy y un tiempo con el día de ayer restado (constante ONE_DAY).
+  Calcular la diferencia de hoy con esos dos tiempos y verificar:
+    ** Si alguno es mayor a cero y, al mismo tiempo, menor a la cantidad de tiempo indicada por FIN
+  */
+  if(isOn){
+    
+    time_t lastTimeTurnedOn = reles[nrRele].timeOn;
+    long timeSinceTurnedOn = difftime(_now, lastTimeTurnedOn);
+    bool hasToTurnOff = timeSinceTurnedOn >= (endTime * ONE_HOUR);
+
+    if(hasToTurnOff)
+      turnOffRele(nrRele);
+          
+  }
+
+  else if(isOff){
+    
+    time_t timeToTurnOnToday =  makeTime({0, minutes, startTime, weekday(), day(), month(), year()});
+    long timePassedToday = difftime(_now, timeToTurnOnToday);
+    long timePassedYesterday = timePassedToday - ONE_DAY;
+    bool hasToTurnOnToday = (timePassedToday >= 0) && (timePassedToday < endTime * ONE_HOUR);
+    bool hasToTurnOnYesterday = (timePassedYesterday >= 0) && (timePassedYesterday < endTime * ONE_HOUR);
+
+    if(hasToTurnOnToday || hasToTurnOnYesterday)
+      turnOnRele(nrRele);
+  
+  }
+
+  /*
+  Si está encendido, calcular la diferencia de tiempo entre ahora y lastTimeTurnedOn del relé.
+  Verificar que esa diferencia no supere el tiempo máximo definido por FIN y en caso positivo, apagarlo.
+  
+
+  */
+    
+}
+
+void verifyAutoGroundRele(int nrRele){
+  
+  bool isOn = reles[nrRele].on;
+  bool isOff = !isOn;
+  short startTime = reles[nrRele].start;
+  short endTime = reles[nrRele].end;
+  short minutes = reles[nrRele].minutes;
+  time_t _now = now();
+
+  if(isOn){
+    
+    time_t lastTimeTurnedOn = reles[nrRele].timeOn;
+    long timeSinceTurnedOn = difftime(_now, lastTimeTurnedOn);
+    bool hasToTurnOff = timeSinceTurnedOn >= (endTime * ONE_MINUTE);
+
+    if(hasToTurnOff)
+      turnOffRele(nrRele);
+          
+  }
+
+  else if(isOff){
+    
+    time_t timeToTurnOnToday =  makeTime({0, minutes, startTime, weekday(), day(), month(), year()});
+    long timePassedToday = difftime(_now, timeToTurnOnToday);
+    long timePassedYesterday = timePassedToday - ONE_DAY;
+    bool hasToTurnOnToday = (timePassedToday >= 0) && (timePassedToday < endTime * ONE_MINUTE);
+    bool hasToTurnOnYesterday = (timePassedYesterday >= 0) && (timePassedYesterday < endTime * ONE_MINUTE);
+
+    if(hasToTurnOnToday || hasToTurnOnYesterday)
+      turnOnRele(nrRele);
+  
+  }
+}
+
+void verifyAutoWindRele(int nrRele){
+  
+  bool isOn = reles[nrRele].on;
+  bool isOff = !isOn;
+  short startValue = reles[nrRele].start;
+  short endValue = reles[nrRele].end;
+
+  if(lastTemperature == -1){
+    sendErrorRele(nrRele);
+    return;
+  }
+  //El extractor se inicia cuando la temperatura está alta y se apaga cuando la misma baja.
+  bool hasToTurnOn = (lastTemperature >= startValue) && isOff;
+  bool hasToTurnOff = (lastTemperature <= endValue) && isOn;
+
+  if(hasToTurnOn)
+    turnOnRele(nrRele);
+  else if(hasToTurnOff)
+    turnOffRele(nrRele);
+    
+}
+
+void verifyAutoHumidityRele(int nrRele){
+  
+  bool isOn = reles[nrRele].on;
+  bool isOff = !isOn;
+  short startValue = reles[nrRele].start;
+  short endValue = reles[nrRele].end;
+  
+  if(lastHumidity == -1){
+    sendErrorRele(nrRele);
+    return;
+  }
+  //El humidificador se inicia cuando la humedad está baja y se apaga cuando la misma sube.
+  bool hasToTurnOn = (lastHumidity <= startValue) && isOff;
+  bool hasToTurnOff = (lastHumidity >= endValue) && isOn;
+
+  if(hasToTurnOn)
+    turnOnRele(nrRele);
+  else if(hasToTurnOff)
+    turnOffRele(nrRele);
+    
+}
+  /*
   tmElements_t nowElements = {second(), minute(), hour(), weekday(), day(), month(), year() };
   tmElements_t releElements;
   breakTime(timeReleOn, releElements);
@@ -205,7 +351,7 @@ void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele){
   {  
     if(automatico)
     {
-      /*
+      
       if(lastT == -1){
         if(encendido)
           turnOffRele(nrRele);        
@@ -215,7 +361,7 @@ void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele){
 
       else if((lastT >= rele.inicio) && !encendido)
         turnOnRele(nrRele);
-      */
+      
       if(_suelo < 380 && encendido)
         turnOffRele(nrRele);
       else if(_suelo >= 380 && !encendido)
@@ -235,7 +381,7 @@ void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele){
   {  
     if(automatico)
     {
-      /*if(infoActualizadaRiego){
+      if(infoActualizadaRiego){
         Alarm.free(idSuelo);
         if(nrRele == 1)
           idSuelo = Alarm.alarmRepeat(rele.inicio,rele.minutos,0,turnOnRele1);
@@ -248,7 +394,7 @@ void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele){
         
         infoActualizadaRiego = false;
       }
-      */
+      
       tmElements_t releData;
       if(rele.inicio + (rele.fin / 60) > 23){
       }
@@ -308,158 +454,124 @@ void verifyReleStatus(DataRele rele, TipoRele tipo, int nrRele){
   }
     
 }
+  */
 
-void turnOnRele(int nrRele){
+void sendErrorRele(int nrRele){
+
+  bool releIsOn = reles[nrRele].on;
+  unsigned short int pinRele = reles[nrRele].pin;
+
+  if(releIsOn){
+    digitalWrite(pinRele, LOW);
+    reles[nrRele].on = false;
+  }
 
   char info[6];
-
-  if(nrRele == 1 && !r1IsOn){
-    digitalWrite(PINRELE1, HIGH);
-    r1IsOn = true;
-    tEncendidoR1 = now();
-  }
-  else if(nrRele == 2 && !r2IsOn){
-    digitalWrite(PINRELE2, HIGH);
-    r2IsOn = true;
-    tEncendidoR2 = now();
-  }
-  else if(nrRele == 3 && !r3IsOn){
-    digitalWrite(PINRELE3, HIGH);
-    r3IsOn = true;
-    tEncendidoR3 = now();
-  }
-  else if(nrRele == 4 && !r4IsOn){
-    digitalWrite(PINRELE4, HIGH);
-    r4IsOn = true;
-    tEncendidoR4 = now();
-  }
-
-  sprintf(info, "R%d 1", nrRele);
+  sprintf(info, "R%d -1", (nrRele + 1));
   Serial.println(info);
   memset(info, '\0', sizeof(char) * 5);
   delay(100);
+
 }
 
-void turnOffRele(int nrRele){
-
-  char info[6];
-
-  if(nrRele == 1 && r1IsOn){
-    digitalWrite(PINRELE1, LOW);
-    r1IsOn = false;
-  }
-  else if(nrRele == 2 && r2IsOn){
-    digitalWrite(PINRELE2, LOW);
-    r2IsOn = false;
-  }
-  else if(nrRele == 3 && r3IsOn){
-    digitalWrite(PINRELE3, LOW);
-    r3IsOn = false;
-  }
-  else if(nrRele == 4 && r4IsOn){
-    digitalWrite(PINRELE4, LOW);
-    r4IsOn = false;
-  }
-
-  sprintf(info, "R%d 0", nrRele);
-  Serial.println(info);
-  memset(info, '\0', sizeof(char) * 5);
-  delay(100);
+void getMessage(const char * msg){
+  
+  if(charStarts(msg, "R1"))
+      setOnOrOffReles(msg);
+    
+    else if(charStarts(msg, "AMB"))
+      sendEnvironmentInfo();
+    
+    else if(charStarts(msg, "&"))
+      setReleTimes(msg);
+        
+    else if(charStarts(msg, "TIPOS"))
+      getTypes(msg);
+    
+    else if(charStarts(msg, "DATE"))
+      getDateTime(msg);
 }
 
-void setOnOrOffReles(const char * msj){
+void turnOnRele(int nrRele, bool isFirst = false){
+
+  bool releIsOff = !(reles[nrRele].on);
+  unsigned short int pinRele = reles[nrRele].pin;
+
+  if(releIsOff){
+    digitalWrite(pinRele, HIGH);
+    reles[nrRele].on = true;
+    reles[nrRele].timeOn = now();
+  }
+
+  if(!isFirst){
+    char info[6];
+    sprintf(info, "R%d 1", (nrRele + 1));
+    Serial.println(info);
+    memset(info, '\0', sizeof(char) * 5);
+    delay(100);
+  }
+
+}
+
+void turnOffRele(int nrRele, bool isFirst = false){
+
+  bool releIsOn = reles[nrRele].on;
+  unsigned short int pinRele = reles[nrRele].pin;
+
+  if(releIsOn){
+    digitalWrite(pinRele, LOW);
+    reles[nrRele].on = false;
+  }
+
+  if(!isFirst){
+    char info[6];
+    sprintf(info, "R%d 0", (nrRele + 1));
+    Serial.println(info);
+    memset(info, '\0', sizeof(char) * 5);
+    delay(100);
+  }
+  
+}
+
+void setOnOrOffReles(const char * msg){
 
   Serial.print('1');
-  int cantR = 0;
-  for(int i = 0; i < strlen(msj); i++){
-    
-    if(msj[i] == 'R'){
-      cantR++;
+  int currRele = 0;
+  bool turnOn, turnOff;
+  //De la forma R1 1 R2 0 R3 0 R4 1
+
+  for(int i = 3; i < strlen(msg); i++){
+
+    if(msg[i] == 'R'){
+      currRele++;
       continue;
     }
+    
+    bool releIsOn = reles[currRele].on;
+    bool releIsOff = !releIsOn;
+    bool releIsManual = reles[currRele].manual;
+    bool msgIsOn = msg[i] == '1';
+    bool msgIsOff = msg[i] == '0';
+    bool notIsReleNumberIndicator =  (msg[i-1] != 'R');
 
-    if(msj[i] == '1' || msj[i] == '0' && msj[i-1] != 'R'){
-      if(cantR == 1)
-        msjR1[0] = msj[i];
-      else if(cantR == 2)
-        msjR2[0] = msj[i];
-      else if(cantR == 3)
-        msjR3[0] = msj[i];
-      else if(cantR == 4)
-        msjR4[0] = msj[i];
+    if((msgIsOn || msgIsOff) && notIsReleNumberIndicator && releIsManual){
+      turnOn = msgIsOn && releIsOff;
+      turnOff = msgIsOff && releIsOn;
+
+      if(turnOn)
+        turnOnRele(currRele, true);
+      else if(turnOff)
+        turnOffRele(currRele, true);
+        
     }
-    
+    delay(100);
   }
-  
-  delay(25);
-
-  bool turnOnR1 = (msjR1[0] == '1') && (!r1IsOn) && (dataR1.manual);
-  bool turnOnR2 = (msjR2[0] == '1') && (!r2IsOn) && (dataR2.manual);
-  bool turnOnR3 = (msjR3[0] == '1') && (!r3IsOn) && (dataR3.manual);
-  bool turnOnR4 = (msjR4[0] == '1') && (!r4IsOn) && (dataR4.manual);
-
-  bool turnOffR1 = (msjR1[0] == '0') && (r1IsOn) && (dataR1.manual);
-  bool turnOffR2 = (msjR2[0] == '0') && (r2IsOn) && (dataR2.manual);
-  bool turnOffR3 = (msjR3[0] == '0') && (r3IsOn) && (dataR3.manual);
-  bool turnOffR4 = (msjR4[0] == '0') && (r4IsOn) && (dataR4.manual);
-
-  delay(10);
-
-  if(turnOnR1 || turnOffR1)
-    TurnManuallyRele(1);
-    
-  delay(10);
-
-  if(turnOnR2 || turnOffR2)
-    TurnManuallyRele(2);
-
-  delay(10);
-
-  if(turnOnR3 || turnOffR3)
-    TurnManuallyRele(3);
-
-  delay(10);
-
-  if(turnOnR4 || turnOffR4)
-    TurnManuallyRele(4);
-
-  delay(100);
 
 }
 
-void TurnManuallyRele(short int numRele){
-
-  switch(numRele){
-    case 1:
-      if(r1IsOn)
-        turnOffRele(1);
-      else
-        turnOnRele(1);
-      break;
-    case 2:
-      if(r2IsOn)
-        turnOffRele(2);
-      else
-        turnOnRele(2);
-      break;
-    case 3:
-      if(r3IsOn)
-        turnOffRele(3);
-      else
-        turnOnRele(3);
-      break;
-    case 4:
-      if(r4IsOn)
-        turnOffRele(4);
-      else
-        turnOnRele(4);
-      break;
-  }
-}
-
-bool charStarts(const char* cadena, const char * empiezaCon){
+bool charStarts(const char* chain, const char * startWith){
   
-  if(strncmp(cadena, empiezaCon, strlen(empiezaCon)) == 0)
+  if(strncmp(chain, startWith, strlen(startWith)) == 0)
     return true;
   else
     return false;
@@ -468,91 +580,77 @@ bool charStarts(const char* cadena, const char * empiezaCon){
 
 void sendEnvironmentInfo(){
 
-  char hum[7];
-  char tem[7];
-  char sue[10];
-  
+  char charHumidity[7];
+  char charTemperature[7];
+  char charGround[10];
+  float humidity = dht.readHumidity();
   delay(10);
-
-  float h = dht.readHumidity();
+  float temperature = dht.readTemperature();
   delay(10);
+  lastGround = analogRead(PINGROUND);
   
-  float t = dht.readTemperature();
-  delay(10);
-  
-  _suelo = analogRead(PINSENSORSUELO);
-  delay(10);
-  
-  if(!isnan(h)){
-    _lastH = h;
-    cantNoLeidosH = 0;
-    dtostrf(h,6,2,hum);
+  if(!isnan(humidity)){
+    lastHumidity = humidity;
+    quantityErrHumidity = 0;
+    dtostrf(humidity,6,2,charHumidity);
   }
   else{
-    strcpy(hum,"0");
-    cantNoLeidosH++;
-    if(cantNoLeidosH > 10)
-      _lastH = -1;
+    strcpy(charHumidity,"0");
+    quantityErrHumidity++;
+    if(quantityErrHumidity > 10)
+      lastHumidity = -1;
   }
   
-  if(!isnan(t)){
-    _lastT = t;
-    cantNoLeidosT = 0;
-    dtostrf(t,6,2,tem);
+  if(!isnan(temperature)){
+    lastTemperature = temperature;
+    quantityErrTemperature = 0;
+    dtostrf(temperature,6,2,charTemperature);
   }
   else{
-    strcpy(tem,"0");
-    cantNoLeidosT++;
-    if(cantNoLeidosT > 10)
-      _lastT = -1;
+    strcpy(charTemperature,"0");
+    quantityErrTemperature++;
+    if(quantityErrTemperature > 10)
+      lastTemperature = -1;
   }
 
-  sprintf(sue, "%d \n",_suelo);
+  sprintf(charGround, "%d \n",lastGround);
 
   Serial.print("TE ");
   delay(5);
-  Serial.print(tem);
+  Serial.print(charTemperature);
   delay(5);  
   Serial.print(" HU ");
   delay(5);
-  Serial.print(hum);
+  Serial.print(charHumidity);
   delay(5);
   Serial.print(" SU ");
   delay(5);
-  Serial.print(sue);
+  Serial.print(charGround);
   delay(100);
   
 }
 
-void getTypes(const char * msj){
+void getTypes(const char * msg){
 
-  int tipoActual = 1;
-  TipoRele tipo;
+  int current = 0;
+  ReleTypes _type;
 
-  for(int i = 6; i < strlen(msj); i++){
-    if(isdigit(msj[i])){
+  for(int i = 6; i < strlen(msg); i++){
+    if(isdigit(msg[i])){
       
-      char t = msj[i];
+      char t = msg[i];
 
       if(t == '0')
-        tipo = luces;
+        _type = light;
       else if(t == '1')
-        tipo = humed;
+        _type = humidifier;
       else if(t == '2')
-        tipo = suelo;
+        _type = ground;
       else if(t == '3')
-        tipo = venti;
-      
-      if(tipoActual == 1)
-        tipo1 = tipo;
-      else if(tipoActual == 2)
-        tipo2 = tipo;
-      else if(tipoActual == 3)
-        tipo3 = tipo;
-      else if(tipoActual == 4)
-        tipo4 = tipo;
-      
-      tipoActual++;
+        _type = wind;
+
+      reles[current].type = _type;
+      current++;
 
     }
   }
@@ -564,42 +662,42 @@ void getTypes(const char * msj){
 
 }
 
-void getDateTime(const char * msj){
+void getDateTime(const char * msg){
 
   Serial.print('4');
-  int datoActual = 0;
+  int current = 0;
   int hora, min, sec, mes, dia, year;
   char charNumActual[7];
   int index = 0;
 
-  for(int i = 5; i < strlen(msj); i++){
+  for(int i = 5; i < strlen(msg); i++){
     
-    if(isspace(msj[i])){
+    if(isspace(msg[i])){
 
-      if(datoActual == 0)
+      if(current == 0)
         hora = atoi(charNumActual);
-      else if(datoActual == 1)
+      else if(current == 1)
         min = atoi(charNumActual);
-      else if(datoActual == 2)
+      else if(current == 2)
         sec = atoi(charNumActual);
-      else if(datoActual == 3)
+      else if(current == 3)
         mes = atoi(charNumActual);
-      else if(datoActual == 4)
+      else if(current == 4)
         dia = atoi(charNumActual);
-      else if(datoActual == 5)
+      else if(current == 5)
         year = atoi(charNumActual);
 
-      datoActual++;
+      current++;
       memset(charNumActual, '\0', sizeof(char) * 6);
       index = 0;
       continue;
     }
 
-    if(isdigit(msj[i])){
-      charNumActual[index] = msj[i];
+    if(isdigit(msg[i])){
+      charNumActual[index] = msg[i];
       index++;
       
-      if( (i + 1) == strlen(msj)){
+      if( (i + 1) == strlen(msg)){
         year = atoi(charNumActual);
       }
     }
@@ -612,44 +710,44 @@ void getDateTime(const char * msj){
   delay(100);
 }
 
-void setReleTimes(const char * msj){
+void setReleTimes(const char * msg){
 
   //LLEGA INFO NUEVA. FORMATO: &INICIO-FIN-MINUTOS-MANUAL&...
-  unsigned short int sepRele = 1;
+  unsigned short int sepRele = 0;
   unsigned short int sepData = 0;
   unsigned short int digitActual = 0;
-  int numActual = 0;
-  char numCharActual[7];
+  int valor = 0;
+  char charValor[7];
 
   //Hay que saltearse el primer &
-  for(int i = 1; i < strlen(msj); i++){
+  for(int i = 1; i < strlen(msg); i++){
 
-    if(msj[i] == '&'){
-      numActual = atoi(numCharActual);
-      setReleT(sepRele, sepData, numActual);
+    if(msg[i] == '&'){
+      valor = atoi(charValor);
+      setReleT(sepRele, sepData, valor);
       sepRele++;
       sepData = 0;
       digitActual = 0;
-      memset(numCharActual, '\0', sizeof(char) * 6);
+      memset(charValor, '\0', sizeof(char) * 6);
       continue;
     }
 
-    if(msj[i] == '-'){
-      numActual = atoi(numCharActual);
-      setReleT(sepRele, sepData, numActual);
+    if(msg[i] == '-'){
+      valor = atoi(charValor);
+      setReleT(sepRele, sepData, valor);
       sepData++;
       digitActual = 0;
-      memset(numCharActual, '\0', sizeof(char) * 6);
+      memset(charValor, '\0', sizeof(char) * 6);
       continue;
     }
 
-    if(isdigit(msj[i])){
-      numCharActual[digitActual] = msj[i];     
+    if(isdigit(msg[i])){
+      charValor[digitActual] = msg[i];     
       digitActual++;
 
-      if((i + 1) == strlen(msj)){
-        numActual = atoi(numCharActual);
-        setReleT(sepRele, sepData, numActual);
+      if((i + 1) == strlen(msg)){
+        valor = atoi(charValor);
+        setReleT(sepRele, sepData, valor);
       }      
     }
 
@@ -657,8 +755,6 @@ void setReleTimes(const char * msj){
 
   Serial.print('3');
   delay(250);
-  infoActualizadaLuces = true;
-  infoActualizadaRiego = true;
   Serial.flush();
   delay(100);
 
@@ -666,160 +762,15 @@ void setReleTimes(const char * msj){
 
 void setReleT(unsigned short int rele, unsigned short int pos, int valor){
 
-  switch(rele){
-    case 1:
       if(pos == 0)
-        dataR1.inicio = valor;
+        reles[rele].start = valor;
       else if(pos == 1)
-        dataR1.fin = valor;
+        reles[rele].end = valor;
       else if(pos == 2)
-        dataR1.minutos = valor;
+        reles[rele].minutes = valor;
       else if(pos == 3 && valor == 1)
-        dataR1.manual = true;
+        reles[rele].manual = true;
       else
-        dataR1.manual = false;
-      break;
+        reles[rele].manual = false;
 
-    case 2:
-      if(pos == 0)
-        dataR2.inicio = valor;
-      else if(pos == 1)
-        dataR2.fin = valor;
-      else if(pos == 2)
-        dataR2.minutos = valor;
-      else if(pos == 3 && valor == 1)
-        dataR2.manual = true;
-      else
-        dataR2.manual = false;
-      break;
-
-    case 3:
-      if(pos == 0)
-        dataR3.inicio = valor;
-      else if(pos == 1)
-        dataR3.fin = valor;
-      else if(pos == 2)
-        dataR3.minutos = valor;
-      else if(pos == 3 && valor == 1)
-        dataR3.manual = true;
-      else
-        dataR3.manual = false;
-      break;
-
-    case 4:
-      if(pos == 0)
-        dataR4.inicio = valor;
-      else if(pos == 1)
-        dataR4.fin = valor;
-      else if(pos == 2)
-        dataR4.minutos = valor;
-      else if(pos == 3 && valor == 1)
-        dataR4.manual = true;
-      else
-        dataR4.manual = false;
-      break;
-  }
-}
-
-void Test(){
-
-  /*
-
-  //mandar dataR1, dataR2, dataR3, dataR4 .. .inicio, .fin, .minutos, .manual
-  //tipo1, tipo2, tipo3, tipo4
-  delay(500);
-  char msj[256];
-  short int man;
-  short int tip;
-
-  if(dataR1.manual)
-    man = 1;
-  else
-    man = 0;
-
-  if(tipo1 == luces)
-    tip = 0;
-  else if(tipo1 == humed)
-    tip = 1;
-  else if(tipo1 == suelo)
-    tip = 2;
-  else
-    tip = 3;
-
-  sprintf(msj, "Datos R1: Ini %d, Fin %d, Min %d, Man %d, Tip %d", dataR1.inicio,dataR1.fin, dataR1.minutos,man,tip);
-
-  Serial.println(msj);
-
-  memset(msj,'\0', 255 * sizeof(char));
-  delay(500);
-  Serial.flush();
-  delay(500);
-
-  if(dataR2.manual)
-    man = 1;
-  else
-    man = 0;
-  
-  if(tipo2 == luces)
-    tip = 0;
-  else if(tipo2 == humed)
-    tip = 1;
-  else if(tipo2 == suelo)
-    tip = 2;
-  else
-    tip = 3;
-
-  sprintf(msj, "Datos R2: Ini %d, Fin %d, Min %d, Man %d, Tip %d", dataR2.inicio,dataR2.fin, dataR2.minutos,man,tip);
-  Serial.println(msj);
-
-  memset(msj,'\0', 255 * sizeof(char));
-  delay(500);
-  Serial.flush();
-  delay(500);
-
-  if(dataR3.manual)
-    man = 1;
-  else
-    man = 0;
-  
-  if(tipo3 == luces)
-    tip = 0;
-  else if(tipo3 == humed)
-    tip = 1;
-  else if(tipo3 == suelo)
-    tip = 2;
-  else
-    tip = 3;
-
-  sprintf(msj, "Datos R3: Ini %d, Fin %d, Min %d, Man %d, Tip %d", dataR3.inicio,dataR3.fin, dataR3.minutos,man,tip);
-  Serial.println(msj);
-
-  memset(msj,'\0', 255 * sizeof(char));
-  delay(500);
-  Serial.flush();
-  delay(500);
-
-  if(dataR4.manual)
-    man = 1;
-  else
-    man = 0;
-  
-  if(tipo4 == luces)
-    tip = 0;
-  else if(tipo4 == humed)
-    tip = 1;
-  else if(tipo4 == suelo)
-    tip = 2;
-  else
-    tip = 3;
-
-  sprintf(msj, "Datos R4: Ini %d, Fin %d, Min %d, Man %d, Tip %d", dataR4.inicio,dataR4.fin, dataR4.minutos,man,tip);
-  Serial.println(msj);
-
-  memset(msj,'\0', 255 * sizeof(char));
-  delay(500);
-  Serial.flush();
-  delay(500);
-
-  */
 }
