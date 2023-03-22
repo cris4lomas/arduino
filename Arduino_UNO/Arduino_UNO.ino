@@ -4,14 +4,15 @@
 #include <TimeAlarms.h>
 #include <SoftwareSerial.h>
 #define DHTPIN 4
-#define DHTTYPE DHT22
+#define DHTTYPE DHT11
+#define PINGROUND A0
 #define PINRELE1 8
 #define PINRELE2 9
 #define PINRELE3 10
 #define PINRELE4 11
-#define PINGROUND A0
 #define QUANTITYRELES 4
 #define ONE_MINUTE 60
+#define SECS 1000
 
 //******************************************
 //********DEFINICION DE FUNCIONES***********
@@ -69,11 +70,15 @@ DataRele reles[QUANTITYRELES] = {
 
 char msjRec[256];
 
-float lastHumidity = -1;
-float lastTemperature = -1;
+float lastHumidity = 1.0;
+float lastTemperature = 1.0;
 int lastGround = 0;
 int quantityErrTemperature = 0;
 int quantityErrHumidity = 0;
+bool verificarEstados = true;
+bool estadosYaVerificados = true;
+bool dataWifiExtraida = false;
+unsigned long int tiempoParaVerificarEstados;
 
 
 //******************************************
@@ -88,11 +93,10 @@ void setup() {
   for(int i = 0; i < QUANTITYRELES; i++)
     pinMode(reles[i].pin, OUTPUT);
 
-  pinMode(PINGROUND, OUTPUT);
   pinMode(DHTPIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
-  dht.begin();
+  //dht.begin();
 }
 
 //******************************************
@@ -102,7 +106,19 @@ void setup() {
 void loop() {
   
   delay(50);
-  verifyReleStatus();
+
+  if(estadosYaVerificados){
+    tiempoParaVerificarEstados = millis();
+    estadosYaVerificados = false;
+  }
+
+  verificarEstados = millis() - tiempoParaVerificarEstados >= (5 * SECS);
+
+  if(verificarEstados && dataWifiExtraida){
+    verifyReleStatus();
+    estadosYaVerificados = true;
+    delay(250);
+  }
 
   if(bt.available()){
     
@@ -126,7 +142,20 @@ void loop() {
     char * msjRecPointer = msjRec;
     const char * msjRecC = msjRecPointer;
 
-    getMessage(msjRecC);
+    if(charStarts(msjRecC, "R1"))
+      setOnOrOffReles(msjRecC);
+    
+    else if(charStarts(msjRecC, "AMB"))
+      sendEnvironmentInfo();
+    
+    else if(charStarts(msjRecC, "&"))
+      setReleTimes(msjRecC);
+        
+    else if(charStarts(msjRecC, "TIPOS"))
+      getTypes(msjRecC);
+    
+    else if(charStarts(msjRecC, "DATE"))
+      getDateTime(msjRecC);
 
     delay(100);
     memset(msjRec,'\0', 255 * sizeof(char));
@@ -141,13 +170,12 @@ void loop() {
 
 void verifyReleStatus(){
 
-  
-
   for(int i = 0; i < QUANTITYRELES; i++){
 
     ReleTypes _type = reles[i].type;
     bool isManual = reles[i].manual;
 
+    
     if(isManual)
     {
       if(_type == humidifier)
@@ -161,16 +189,18 @@ void verifyReleStatus(){
     }
     //isAutomatic
     else{
-      if(_type == humidifier)
-        verifyAutoHumidityRele(i);
-      else if(_type == ground)
-        verifyAutoGroundRele(i);
-      else if(_type == light)
+      if(_type == light)
         verifyAutoLightRele(i);
-      else if(_type == wind)
-        verifyAutoWindRele(i);      
+      //if(_type == humidifier)
+      //  verifyAutoHumidityRele(i);
+      //else if(_type == ground)
+      //  verifyAutoGroundRele(i);
+      //else if(_type == light)
+      //  verifyAutoLightRele(i);
+      //else if(_type == wind)
+      //  verifyAutoWindRele(i);      
     }
-
+  delay(250);
   }
 }
 
@@ -193,9 +223,9 @@ void verifyAutoLightRele(int nrRele){
   
   bool isOn = reles[nrRele].on;
   bool isOff = !isOn;
-  short startTime = reles[nrRele].start;
-  short endTime = reles[nrRele].end;
-  short minutes = reles[nrRele].minutes;
+  short int startTime = reles[nrRele].start;
+  short int endTime = reles[nrRele].end * ONE_MINUTE;
+  short int minutes = reles[nrRele].minutes;
   time_t _now = now();
 
   /*
@@ -209,8 +239,8 @@ void verifyAutoLightRele(int nrRele){
   if(isOn){
     
     time_t lastTimeTurnedOn = reles[nrRele].timeOn;
-    long timeSinceTurnedOn = difftime(_now, lastTimeTurnedOn);
-    bool hasToTurnOff = timeSinceTurnedOn >= (endTime * ONE_HOUR);
+    long int timeSinceTurnedOn = difftime(_now, lastTimeTurnedOn);
+    bool hasToTurnOff = timeSinceTurnedOn >= (endTime);
 
     if(hasToTurnOff)
       turnOffRele(nrRele);
@@ -218,12 +248,23 @@ void verifyAutoLightRele(int nrRele){
   }
 
   else if(isOff){
-    
-    time_t timeToTurnOnToday =  makeTime({0, minutes, startTime, weekday(), day(), month(), year()});
-    long timePassedToday = difftime(_now, timeToTurnOnToday);
-    long timePassedYesterday = timePassedToday - ONE_DAY;
-    bool hasToTurnOnToday = (timePassedToday >= 0) && (timePassedToday < endTime * ONE_HOUR);
-    bool hasToTurnOnYesterday = (timePassedYesterday >= 0) && (timePassedYesterday < endTime * ONE_HOUR);
+
+    const tmElements_t el_timeToTurnOnToday = {Second: 0, Minute: minutes, Hour: startTime, Wday: weekday(), Day: day(), Month: month(), Year: (year() - 1970)};
+    time_t timeToTurnOnToday =  makeTime(el_timeToTurnOnToday);
+    long int timePassedToday = difftime(_now, timeToTurnOnToday);
+    long int timePassedYesterday = timePassedToday - ONE_DAY;
+    bool hasToTurnOnToday = (timePassedToday >= 0) && (timePassedToday < endTime);
+    bool hasToTurnOnYesterday = (timePassedYesterday >= 0) && (timePassedYesterday < endTime);
+
+    char tm[45];
+    sprintf(tm,"%02d/%02d/%02d %02d:%02d:%02d", day(_now),month(_now),year(_now),hour(_now),minute(_now),second(_now));
+    Serial.print("Hora actual: ");
+    Serial.println(tm);
+
+    char tm2[45];
+    sprintf(tm2,"%02d/%02d/%02d %02d:%02d:%02d", day(timeToTurnOnToday),month(timeToTurnOnToday),year(timeToTurnOnToday),hour(timeToTurnOnToday),minute(timeToTurnOnToday),second(timeToTurnOnToday));
+    Serial.print("Hora para prender el rele: ");
+    Serial.println(tm2);
 
     if(hasToTurnOnToday || hasToTurnOnYesterday)
       turnOnRele(nrRele);
@@ -243,15 +284,15 @@ void verifyAutoGroundRele(int nrRele){
   
   bool isOn = reles[nrRele].on;
   bool isOff = !isOn;
-  short startTime = reles[nrRele].start;
-  short endTime = reles[nrRele].end;
-  short minutes = reles[nrRele].minutes;
+  short int startTime = reles[nrRele].start;
+  short int endTime = reles[nrRele].end;
+  short int minutes = reles[nrRele].minutes;
   time_t _now = now();
 
   if(isOn){
     
     time_t lastTimeTurnedOn = reles[nrRele].timeOn;
-    long timeSinceTurnedOn = difftime(_now, lastTimeTurnedOn);
+    long int timeSinceTurnedOn = difftime(_now, lastTimeTurnedOn);
     bool hasToTurnOff = timeSinceTurnedOn >= (endTime * ONE_MINUTE);
 
     if(hasToTurnOff)
@@ -262,8 +303,8 @@ void verifyAutoGroundRele(int nrRele){
   else if(isOff){
     
     time_t timeToTurnOnToday =  makeTime({0, minutes, startTime, weekday(), day(), month(), year()});
-    long timePassedToday = difftime(_now, timeToTurnOnToday);
-    long timePassedYesterday = timePassedToday - ONE_DAY;
+    long int timePassedToday = difftime(_now, timeToTurnOnToday);
+    long int timePassedYesterday = timePassedToday - ONE_DAY;
     bool hasToTurnOnToday = (timePassedToday >= 0) && (timePassedToday < endTime * ONE_MINUTE);
     bool hasToTurnOnYesterday = (timePassedYesterday >= 0) && (timePassedYesterday < endTime * ONE_MINUTE);
 
@@ -273,15 +314,39 @@ void verifyAutoGroundRele(int nrRele){
   }
 }
 
+void verifyAutoGroundRele2(int nrRele){
+  
+  bool isOn = reles[nrRele].on;
+  bool isOff = !isOn;
+  short int startValue = reles[nrRele].start;
+  short int endValue = reles[nrRele].end;
+
+  if(lastGround == 0){
+    if(isOn)
+      sendErrorRele(nrRele);
+    return;
+  }
+  //El extractor se inicia cuando la humedad de suelo está baja y se apaga cuando la misma sube.
+  bool hasToTurnOn = (lastGround >= startValue) && isOff;
+  bool hasToTurnOff = (lastGround <= endValue) && isOn;
+
+  if(hasToTurnOn)
+    turnOnRele(nrRele);
+  else if(hasToTurnOff)
+    turnOffRele(nrRele);
+    
+}
+
 void verifyAutoWindRele(int nrRele){
   
   bool isOn = reles[nrRele].on;
   bool isOff = !isOn;
-  short startValue = reles[nrRele].start;
-  short endValue = reles[nrRele].end;
+  short int startValue = reles[nrRele].start;
+  short int endValue = reles[nrRele].end;
 
   if(lastTemperature == -1){
-    sendErrorRele(nrRele);
+    if(isOn)
+      sendErrorRele(nrRele);
     return;
   }
   //El extractor se inicia cuando la temperatura está alta y se apaga cuando la misma baja.
@@ -299,11 +364,12 @@ void verifyAutoHumidityRele(int nrRele){
   
   bool isOn = reles[nrRele].on;
   bool isOff = !isOn;
-  short startValue = reles[nrRele].start;
-  short endValue = reles[nrRele].end;
+  short int startValue = reles[nrRele].start;
+  short int endValue = reles[nrRele].end;
   
   if(lastHumidity == -1){
-    sendErrorRele(nrRele);
+    if(isOn)
+      sendErrorRele(nrRele);
     return;
   }
   //El humidificador se inicia cuando la humedad está baja y se apaga cuando la misma sube.
@@ -316,145 +382,6 @@ void verifyAutoHumidityRele(int nrRele){
     turnOffRele(nrRele);
     
 }
-  /*
-  tmElements_t nowElements = {second(), minute(), hour(), weekday(), day(), month(), year() };
-  tmElements_t releElements;
-  breakTime(timeReleOn, releElements);
-  time_t tNowSec = makeTime(nowElements);
-  time_t tReleOnSec = makeTime(releElements);
-
-  if(tipo == humed)
-  {  
-    if(automatico)
-    {
-      if(_lastH == -1){
-        if(encendido)
-          turnOffRele(nrRele);
-      }
-      else if((_lastH >= rele.fin) && encendido)
-        turnOffRele(nrRele);
-
-      else if((_lastH <= rele.inicio) && !encendido)
-        turnOnRele(nrRele);
-    }
-    
-    else
-    {
-      //Si pasaron más de 12 hrs de que está encendido, apagar.
-      if(((tNowSec - tReleOnSec) > 12 * 3600) && encendido)
-        turnOffRele(nrRele);
-    }
-
-  }
-
-  if(tipo == venti)
-  {  
-    if(automatico)
-    {
-      
-      if(lastT == -1){
-        if(encendido)
-          turnOffRele(nrRele);        
-      }
-      else if((lastT <= rele.fin) && encendido)
-        turnOffRele(nrRele);
-
-      else if((lastT >= rele.inicio) && !encendido)
-        turnOnRele(nrRele);
-      
-      if(_suelo < 380 && encendido)
-        turnOffRele(nrRele);
-      else if(_suelo >= 380 && !encendido)
-        turnOnRele(nrRele);
-    }
-    
-    else
-    {
-      //SI PASARON 12 HORAS DE QUE EL EXTRACTOR ESTÁ PRENDIDO -> APAGAR
-      if(((tNowSec - tReleOnSec) > 12 * 3600) && encendido)
-        turnOffRele(nrRele);
-    }
-    
-  }
-
-  if(tipo == suelo)
-  {  
-    if(automatico)
-    {
-      if(infoActualizadaRiego){
-        Alarm.free(idSuelo);
-        if(nrRele == 1)
-          idSuelo = Alarm.alarmRepeat(rele.inicio,rele.minutos,0,turnOnRele1);
-        else if(nrRele == 2)
-          idSuelo = Alarm.alarmRepeat(rele.inicio,rele.minutos,0,turnOnRele2);
-        else if(nrRele == 3)
-          idSuelo = Alarm.alarmRepeat(rele.inicio,rele.minutos,0,turnOnRele3);
-        else if(nrRele == 4)
-          idSuelo = Alarm.alarmRepeat(rele.inicio,rele.minutos,0,turnOnRele4);
-        
-        infoActualizadaRiego = false;
-      }
-      
-      tmElements_t releData;
-      if(rele.inicio + (rele.fin / 60) > 23){
-      }
-      else{
-        releData = {0, rele.minutos, rele.inicio, weekday(), day(), month(), year() };
-        unsigned long int cantSecRele = (rele.minutos * 60) + (rele.inicio * 3600);
-        unsigned long int cantSecAhora = (hour() * 3600) + (minute() * 60);
-        unsigned long int cantSecFin = (rele.minutos * 60) + (rele.inicio * 3600) + (rele.fin * 60);
-        if(cantSecAhora >= cantSecRele && cantSecAhora < cantSecFin && !encendido){
-          turnOnRele(nrRele);
-        }
-      }
-      
-      //Si se llegó a la hora de fin... apagar (para el riego es en minutos!!)
-      if(((tNowSec - tReleOnSec) > (rele.fin * 60)) && encendido)
-        turnOffRele(nrRele);
-    }
-    
-    else
-    {
-      //SI PASO 1 HORA DE QUE EL REGADOR ESTÁ PRENDIDO -> APAGAR
-      if(((tNowSec - tReleOnSec) > 3600) && encendido)
-        turnOffRele(nrRele);        
-      
-    }
-    
-  }
-
-  if(tipo == luces)
-  {  
-    if(automatico)
-    {
-      tmElements_t releData;
-      if(rele.inicio + rele.fin > 23){
-      }
-      else{
-        releData = {0, rele.minutos, rele.inicio, weekday(), day(), month(), year() };
-        unsigned long int cantSecRele = (rele.minutos * 60) + (rele.inicio * 3600);
-        unsigned long int cantSecAhora = (hour() * 3600) + (minute() * 60);
-        unsigned long int cantSecFin = (rele.minutos * 60) + (rele.inicio * 3600) + (rele.fin * 3600);
-        if(cantSecAhora >= cantSecRele && cantSecAhora < cantSecFin && !encendido){
-          turnOnRele(nrRele);
-        }
-      }
-
-      //Si se llegó a la hora de fin... apagar
-      if(((tNowSec - tReleOnSec) > rele.fin * 3600) && encendido)
-        turnOffRele(nrRele);
-    }
-    
-    else
-    {
-      //SI PASARON 12 HORAS DE QUE EL EXTRACTOR ESTÁ PRENDIDO -> APAGAR
-      if(((tNowSec - tReleOnSec) > 24 * 3600) && encendido)
-          turnOffRele(nrRele);
-    }
-  }
-    
-}
-  */
 
 void sendErrorRele(int nrRele){
 
@@ -535,7 +462,7 @@ void turnOffRele(int nrRele, bool isFirst = false){
 
 void setOnOrOffReles(const char * msg){
 
-  Serial.print('1');
+  Serial.print('4');
   int currRele = 0;
   bool turnOn, turnOff;
   //De la forma R1 1 R2 0 R3 0 R4 1
@@ -565,6 +492,7 @@ void setOnOrOffReles(const char * msg){
         
     }
     delay(100);
+    dataWifiExtraida = true;
   }
 
 }
@@ -580,9 +508,8 @@ bool charStarts(const char* chain, const char * startWith){
 
 void sendEnvironmentInfo(){
 
-  char charHumidity[7];
-  char charTemperature[7];
-  char charGround[10];
+  char charHumidity[7] = {""};
+  char charTemperature[7] = {""};
   float humidity = dht.readHumidity();
   delay(10);
   float temperature = dht.readTemperature();
@@ -600,7 +527,7 @@ void sendEnvironmentInfo(){
     if(quantityErrHumidity > 10)
       lastHumidity = -1;
   }
-  
+
   if(!isnan(temperature)){
     lastTemperature = temperature;
     quantityErrTemperature = 0;
@@ -613,8 +540,6 @@ void sendEnvironmentInfo(){
       lastTemperature = -1;
   }
 
-  sprintf(charGround, "%d \n",lastGround);
-
   Serial.print("TE ");
   delay(5);
   Serial.print(charTemperature);
@@ -625,7 +550,7 @@ void sendEnvironmentInfo(){
   delay(5);
   Serial.print(" SU ");
   delay(5);
-  Serial.print(charGround);
+  Serial.println(lastGround);
   delay(100);
   
 }
@@ -664,10 +589,10 @@ void getTypes(const char * msg){
 
 void getDateTime(const char * msg){
 
-  Serial.print('4');
+  Serial.print('1');
   int current = 0;
-  int hora, min, sec, mes, dia, year;
-  char charNumActual[7];
+  int hora, min, sec, mes, dia, anio;
+  char charNumActual[7] = {};
   int index = 0;
 
   for(int i = 5; i < strlen(msg); i++){
@@ -685,7 +610,7 @@ void getDateTime(const char * msg){
       else if(current == 4)
         dia = atoi(charNumActual);
       else if(current == 5)
-        year = atoi(charNumActual);
+        anio = atoi(charNumActual);
 
       current++;
       memset(charNumActual, '\0', sizeof(char) * 6);
@@ -698,13 +623,13 @@ void getDateTime(const char * msg){
       index++;
       
       if( (i + 1) == strlen(msg)){
-        year = atoi(charNumActual);
+        anio = atoi(charNumActual);
       }
     }
 
   }
 
-  setTime(hora, min, sec, mes, dia, year);
+  setTime(hora, min, sec, dia, mes, anio);
   delay(100);
   Serial.flush();
   delay(100);

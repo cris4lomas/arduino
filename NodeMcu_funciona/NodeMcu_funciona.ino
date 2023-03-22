@@ -355,11 +355,7 @@ void doFirstLoopStuff(){
 
   sendReleTypes();
 
-  Serial.flush();
-
   sendReleInfo();
-  
-  Serial.flush();
 
   sendReleStatus();
 
@@ -400,7 +396,7 @@ void sendReleDate(){
       dataOk = false;
     }
     else{
-      if((char)Serial.read() != '4')
+      if((char)Serial.read() != '1')
         dataOk = false;
       else
         dataOk = true;
@@ -441,7 +437,7 @@ void sendReleStatus(){
       releStatus = false;
     }
     else{
-      if((char)Serial.read() != '1')
+      if((char)Serial.read() != '4')
         releStatus = false;
       else
         releStatus = true;
