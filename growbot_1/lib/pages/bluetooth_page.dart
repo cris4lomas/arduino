@@ -65,6 +65,7 @@ class _BluetoothPageState extends State<BluetoothPage> {
         String fechaFormateada = "${fecha.hour} ${fecha.minute} ${fecha.second} ${fecha.month} ${fecha.day} ${fecha.year}";
         FirebaseDatabase.instance.ref('dispositivos/${widget.deviceName}').update({'CONEXION': false});
         FirebaseDatabase.instance.ref('dispositivos/${widget.deviceName}').update({'FECHA': fechaFormateada});
+        FirebaseDatabase.instance.ref().child('dispositivos/${widget.deviceName}').update({"INFONUEVA": false});
         Utils.showSuccessSnackBar("Conexión exitosa!");
         Navigator.of(context).pop();
         Navigator.of(context).pop();

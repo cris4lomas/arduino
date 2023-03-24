@@ -3,6 +3,7 @@
 #include <FirebaseESP8266.h>
 #define MAX_WIFI_RETRIES 25
 #define SECS 1000
+#define CANT_RELES 4
 
 char msjRec[256];
 char ssid[100];
@@ -12,9 +13,13 @@ char usrPass[50];
 bool primerLoop = true;
 bool noConectado = true;
 bool connectedToFirebase = false;
-unsigned long int tiempoActual;
+unsigned long int tiempoActualSensores;
+unsigned long int tiempoActualReles;
 bool sensoresEnviados = true;
 bool enviarSensores = false;
+bool relesEnviados = true;
+bool enviarReles = false;
+bool estadoReles[CANT_RELES] = {false, false, false, false};
 
 //***************************************
 //FIREBASE
@@ -70,20 +75,34 @@ void loop() {
     primerLoop = false;
   }
 
-  
+  if(relesEnviados){
+    tiempoActualReles = millis();
+    relesEnviados = false;
+  }
 
   if(sensoresEnviados){
-    tiempoActual = millis();
+    tiempoActualSensores = millis();
     sensoresEnviados = false;
   }
 
-  enviarSensores = millis() - tiempoActual >= (25 * SECS);
+  enviarSensores = (millis() - tiempoActualSensores) >= (25 * SECS) && (!streamHasData);
+  enviarReles = (millis() - tiempoActualReles) >= (5 * SECS) && (!enviarSensores) && (!streamHasData);
 
 
   if(enviarSensores){
+    delay(100);
+    Serial.flush();
     Serial.println("AMB");
     sensoresEnviados = true;
-    delay(250);
+    delay(450);
+  }
+
+  if(enviarReles){
+    delay(100);
+    Serial.flush();
+    Serial.println("RELES");
+    relesEnviados = true;
+    delay(450);
   }
 
   if(Serial.available()){
@@ -97,6 +116,10 @@ void loop() {
     msjRec[index] = '\0';
     char * msjRecPointer = msjRec;
     const char * msjRecC = msjRecPointer;
+
+    if(streamHasData){
+    reSendStreamData();
+    }
     
     if(charStarts(msjRecC, "TE "))
       setEnvironmentData(msjRecC);
@@ -108,15 +131,23 @@ void loop() {
   }
 
   if(streamHasData){
-    Firebase.setBoolAsync(fbdo, "/dispositivos/000101/INFONUEVA", false);
-    streamHasData = false;
-    sendReleInfo();
-    delay(250);
-    sendReleStatus();
-    delay(500);
+    reSendStreamData();
   }
 
   delay(50);
+}
+
+void reSendStreamData(){
+  
+  Firebase.setBoolAsync(fbdo, "/dispositivos/000101/INFONUEVA", false);
+  streamHasData = false;
+  delay(250);
+  Serial.flush();
+  sendReleInfo();
+  delay(250);
+  sendReleStatus();
+  delay(500);
+  
 }
   
   //*************************************************************
@@ -141,26 +172,41 @@ void loop() {
 
 void setFbReleData(const char *msj){
 
-  //DE LA FORMA R[NRO RELE] [0 si es falso / 1 si esta encendido]
-  char nroRele = msj[1];
-  bool encendido;
+  //DE LA FORMA R[0 si es falso / 1 si esta encendido]
+   //suponiendo R1 R0 R1 R0
+  int nroRele = 0;
+  for(int i = 1; i < strlen(msj); i++){
+    
+    if(msj[i] == 'R'){
+      nroRele++;
+      continue;
+    }
+    else if(isdigit(msj[i])){
+      bool on;
+      if(msj[i] == '1')
+        on = true;
+      else
+        on = false;
+      
+      bool hasToTurnOn = on && !estadoReles[nroRele];
+      bool hasToTurnOff = !on && estadoReles[nroRele];
 
-   //suponiendo R1 1 o R1 0
-  if(msj[3] == '1')
-    encendido = true;
-  else
-    encendido = false;
-  
-  if(nroRele == '1')
-    Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE1", encendido);
-  else if(nroRele == '2')
-    Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE2", encendido);
-  else if(nroRele == '3')
-    Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE3", encendido);
-  else if(nroRele == '4')
-    Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE4", encendido);
-
-  delay(100);
+      if(hasToTurnOn || hasToTurnOff){
+        
+        if(nroRele == 0)
+          Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE1", on);
+        else if(nroRele == 1)
+          Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE2", on);
+        else if(nroRele == 2)
+          Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE3", on);
+        else if(nroRele == 3)
+          Firebase.setBoolAsync(fbdo, "/dispositivos/000101/RELES/RELE4", on);
+      }
+      
+        estadoReles[nroRele] = on;
+    }
+    delay(100);
+  }
 }
 
 void setEnvironmentData(const char *msj){
@@ -454,10 +500,14 @@ void sendReleStatus(){
 int getStatus(unsigned short int rele){
 
   bool dataOk = true;
+  bool encendido;
+  
   do{
     if(rele == 1){
       if(Firebase.getBool(fbdo, "/dispositivos/000101/RELES/RELE1")){
-        if(fbdo.boolData())
+        encendido = fbdo.boolData();
+        estadoReles[rele - 1] = encendido;       
+        if(encendido)
           return 1;
         else        
           return 0;
@@ -466,7 +516,9 @@ int getStatus(unsigned short int rele){
     }
     else if(rele == 2){
       if(Firebase.getBool(fbdo, "/dispositivos/000101/RELES/RELE2")){
-        if(fbdo.boolData())
+        encendido = fbdo.boolData();
+        estadoReles[rele - 1] = encendido;       
+        if(encendido)
           return 1;
         else        
           return 0;
@@ -475,7 +527,9 @@ int getStatus(unsigned short int rele){
     }
     else if(rele == 3){
       if(Firebase.getBool(fbdo, "/dispositivos/000101/RELES/RELE3")){
-        if(fbdo.boolData())
+        encendido = fbdo.boolData();
+        estadoReles[rele - 1] = encendido;       
+        if(encendido)
           return 1;
         else        
           return 0;
@@ -484,7 +538,9 @@ int getStatus(unsigned short int rele){
     }
     else if(rele == 4){
       if(Firebase.getBool(fbdo, "/dispositivos/000101/RELES/RELE4")){
-        if(fbdo.boolData())
+        encendido = fbdo.boolData();
+        estadoReles[rele - 1] = encendido;       
+        if(encendido)
           return 1;
         else        
           return 0;
@@ -538,7 +594,7 @@ void sendReleInfo(){
 
   char msg[64];
 
-  sprintf(msg, "&%d-%d-%d-%d&%d-%d-%d-%d&%d-%d-%d-%d&%d-%d-%d-%d \n", r1Ini, r1Fin, r1Min, r1Man, r2Ini, r2Fin, r2Min, r2Man, r3Ini, r3Fin, r3Min, r3Man, r4Ini, r4Fin, r4Min, r4Man);
+  sprintf(msg, "&%d/%d/%d/%d&%d/%d/%d/%d&%d/%d/%d/%d&%d/%d/%d/%d \n", r1Ini, r1Fin, r1Min, r1Man, r2Ini, r2Fin, r2Min, r2Man, r3Ini, r3Fin, r3Min, r3Man, r4Ini, r4Fin, r4Min, r4Man);
 
   bool releInfo = true;
 

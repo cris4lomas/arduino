@@ -139,14 +139,16 @@ class _DevicePageState extends State<DevicePage> {
     bool isEnabled;
     bool hasDevice = false;
     int deviceIndex = -1;
-    
+
+    await FlutterBluetoothSerial.instance.isEnabled;
+    await FlutterBluetoothSerial.instance.requestEnable();
+    // ignore: use_build_context_synchronously
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
         return const Center(child: CircularProgressIndicator());
       });
-    await FlutterBluetoothSerial.instance.requestEnable();
     isEnabled = (await FlutterBluetoothSerial.instance.isEnabled) ?? false;
     if(!isEnabled){
       // ignore: use_build_context_synchronously
@@ -205,11 +207,14 @@ class _DevicePageState extends State<DevicePage> {
 
   double conocerHumedad(String dato){
     try{
-      int valor = int.parse(dato);
-      double result = (valor - 1301).abs() / 10;
-      if(result > 100){
-        result = 100;
+      int valor = (int.parse(dato) - 1300).abs();
+      if(valor < 0){
+        valor = 0;
+      } else if(valor > 1000){
+        valor = 1000;
       }
+      double result = valor.toDouble() / 10.00;
+
       return result;
     } on Exception{
       return 0.00;

@@ -95,10 +95,15 @@ class _RelePageState extends State<RelePage> {
   void selectManual() => changeIndex(1);
 
   void setHabilitedBlocks(){
-    if(tipo == TypeOfRele.luz || tipo == TypeOfRele.riego){
+    if(tipo == TypeOfRele.luz){
       porTiempoHab = true;
       porSensorHab = false;
-    } else{
+    }
+    else if(tipo == TypeOfRele.riego){
+      porTiempoHab = true;
+      porSensorHab = true;
+    } 
+    else{
       porTiempoHab = false;
       porSensorHab = true;
     }
@@ -154,13 +159,33 @@ class _RelePageState extends State<RelePage> {
 
       setState(() {
         manualOn = snapshotTimes.child("MANUAL").value.toString() == "true" ? true : false;
-        if(tipo == TypeOfRele.luz){
+        if(tipo == TypeOfRele.luz || tipo == TypeOfRele.riego){
           minutos = int.tryParse(snapshotTimes.child("MINS").value.toString())?? 0;
         }
         inicio = int.tryParse(snapshotTimes.child("INICIO").value.toString())?? 0;
         fin = int.tryParse(snapshotTimes.child("FIN").value.toString())?? 0;
 
-        _index = manualOn != null ? (manualOn! ? 1 : ((tipo == TypeOfRele.luz || tipo == TypeOfRele.riego) ? 2 : 3) ) : 0;
+        if(manualOn == null){
+          _index = 0;
+        } else{
+          if(manualOn!){
+            _index = 1;
+          }
+          else{
+            if(tipo == TypeOfRele.luz){
+              _index = 2;
+            } else if(tipo == TypeOfRele.riego){
+              if(minutos == -1){
+                _index = 3;
+              }
+              else{
+                _index = 2;
+              }
+            } else{
+              _index = 3;
+            }
+          }
+        }
         _indexPrevioAGuardar = _index;
       });
 
@@ -189,6 +214,7 @@ class _RelePageState extends State<RelePage> {
       snapshotTimes.update({
           "MANUAL": manualOn,
       });
+      await FirebaseDatabase.instance.ref().child('dispositivos/${widget.deviceName}').update({"INFONUEVA": true});
       return;
     }
 
@@ -203,7 +229,9 @@ class _RelePageState extends State<RelePage> {
       }
     }
     if(tipo == TypeOfRele.riego){
-      if(!_formKeyTiempo.currentState!.validate()){
+      if(_index == 2 && !_formKeyTiempo.currentState!.validate()){
+        return;
+      } else if (_index == 3 && !_formKeySuelo.currentState!.validate()){
         return;
       }
     }
@@ -215,7 +243,7 @@ class _RelePageState extends State<RelePage> {
 
     var snapshotTimes = FirebaseDatabase.instance.ref().child('dispositivos/${widget.deviceName}/DATARELE/${widget.rele}');
 
-    if(tipo == TypeOfRele.luz || tipo == TypeOfRele.riego){
+    if(tipo == TypeOfRele.luz){
         snapshotTimes.update({
           "MANUAL": false,
           "INICIO":int.tryParse(controlHoras.text),
@@ -228,6 +256,35 @@ class _RelePageState extends State<RelePage> {
           minutos = int.tryParse(controlMinutos.text);
         });
       }
+      if(tipo == TypeOfRele.riego){
+
+        if(_index == 2){
+          snapshotTimes.update({
+          "MANUAL": false,
+          "INICIO":int.tryParse(controlHoras.text),
+          "FIN": int.tryParse(controlHorasEncendido.text),
+          "MINS": int.tryParse(controlMinutos.text)
+        });
+        setState(() {
+          inicio = int.tryParse(controlHoras.text);
+          fin = int.tryParse(controlHorasEncendido.text);
+          minutos = int.tryParse(controlMinutos.text);
+        });
+        }
+        else if(_index == 3){
+          snapshotTimes.update({
+            "MANUAL": false,
+            "INICIO":int.tryParse(controlSueloEncendido.text),
+            "FIN": int.tryParse(controlSueloApagado.text),
+            "MINS": -1
+          });
+          setState(() {
+            inicio = int.tryParse(controlSueloEncendido.text);
+            fin = int.tryParse(controlSueloApagado.text);
+            minutos = -1;
+          });
+        }
+      }
       if(tipo == TypeOfRele.humi){
         snapshotTimes.update({
           "MANUAL": false,
@@ -239,21 +296,6 @@ class _RelePageState extends State<RelePage> {
           fin = int.tryParse(controlHumedadApagado.text);
         });
       }
-
-      /*
-      if(tipo == TypeOfRele.riego){
-        snapshotTimes.update({
-          "MANUAL": false,
-          "INICIO":int.tryParse(controlSueloEncendido.text),
-          "FIN":int.tryParse(controlSueloApagado.text),
-        });
-        setState(() {
-          inicio = int.tryParse(controlSueloEncendido.text);
-          fin = int.tryParse(controlSueloApagado.text);
-        });
-      }
-
-      */
       if(tipo == TypeOfRele.vent){
         snapshotTimes.update({
           "MANUAL": false,
@@ -272,7 +314,7 @@ class _RelePageState extends State<RelePage> {
       _indexPrevioAGuardar = _index;
       manualOn = false;
     });
-
+    await FirebaseDatabase.instance.ref().child('dispositivos/${widget.deviceName}').update({"INFONUEVA": true});
     Utils.showSuccessSnackBar("Datos guardados exitosamente.");
   }
   
@@ -504,7 +546,6 @@ class _RelePageState extends State<RelePage> {
                                           textInputAction: TextInputAction.next,
                                           onEditingComplete: () => setState(()=>hasModifiedData = true),
                                           decoration: const InputDecoration(
-                                            hintText: "hs.",
                                             counterText: "",
                                             ),
                                           maxLength: 2,
@@ -513,7 +554,11 @@ class _RelePageState extends State<RelePage> {
                                               if(int.parse(val) > 0 && int.parse(val) < 24){
                                                 return null;
                                               } else{
-                                                Utils.showErrorSnackBar("Debe ingresar un tiempo en horas \nde encendido mayor a 0 y menor a 24.");
+                                                if(tipo == TypeOfRele.luz){
+                                                  Utils.showErrorSnackBar("Debe ingresar un tiempo en horas \nde encendido mayor a 0 y menor a 24.");
+                                                } else{
+                                                  Utils.showErrorSnackBar("Debe ingresar un tiempo en minutos \nde encendido mayor a 0 y menor a 121.");
+                                                }
                                                 return " ";
                                               }
                                             } else{
@@ -522,7 +567,7 @@ class _RelePageState extends State<RelePage> {
                                           },
                                         ),
                                   ),
-                                  Text("hs.", style: GoogleFonts.roboto(fontSize: smallFontSize)),
+                                  Text(tipo == TypeOfRele.luz ? "hs." : "mins.", style: GoogleFonts.roboto(fontSize: smallFontSize)),
                                 ]
                               ),
                             ]
